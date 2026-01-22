@@ -17,6 +17,10 @@
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HendrikYtt/clipshot.git"
+  },
   "devDependencies": {
     "@types/node": "^25.0.10",
     "typescript": "^5.9.3"
