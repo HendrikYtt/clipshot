@@ -101,7 +101,7 @@ Run without command to setup/configure.
 function uninstall(): void {
   // Stop any running process
   try {
-    const result = execSync("pgrep -f 'node.*[s]hotmon.*--daemon'", { encoding: "utf8" });
+    const result = execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
     const pids = result.trim().split("\n").filter(Boolean);
     for (const pid of pids) {
       process.kill(parseInt(pid), "SIGTERM");
@@ -126,7 +126,7 @@ function uninstall(): void {
 function stopBackground(): void {
   try {
     // Use bracket trick to avoid pgrep matching itself
-    const result = execSync("pgrep -f 'node.*[s]hotmon.*--daemon'", { encoding: "utf8" });
+    const result = execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
     const pids = result.trim().split("\n").filter(Boolean);
     for (const pid of pids) {
       process.kill(parseInt(pid), "SIGTERM");
@@ -143,7 +143,7 @@ function stopBackground(): void {
 function showStatus(): void {
   try {
     // Use bracket trick to avoid pgrep matching itself
-    const result = execSync("pgrep -af 'node.*[s]hotmon.*--daemon'", { encoding: "utf8" });
+    const result = execSync("pgrep -af 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
     const lines = result.trim().split("\n").filter(Boolean);
     if (lines.length > 0) {
       for (const line of lines) {
@@ -223,7 +223,7 @@ async function startCommand(): Promise<void> {
 
   // Stop any existing process before starting new one
   try {
-    const result = execSync("pgrep -f 'node.*[s]hotmon.*--daemon'", { encoding: "utf8" });
+    const result = execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
     const pids = result.trim().split("\n").filter(Boolean);
     for (const pid of pids) {
       process.kill(parseInt(pid), "SIGTERM");
