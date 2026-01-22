@@ -4,9 +4,9 @@ Screenshot monitor CLI. Watches clipboard for screenshots and uploads to remote 
 
 ## Why?
 
-When using AI CLI tools like Claude Code, Codex, or others, you often need to share screenshots with them. But this doesn't work great on Windows, and when you SSH into a remote server to use these tools, you can't paste images at all.
+When using AI CLI tools like Claude Code, Codex, or others, you often need to share screenshots with them. But when you SSH into a remote server to use these tools, you can't paste images at all.
 
-clipshot solves this - take a screenshot locally, and it automatically uploads to your remote server and copies the path to your clipboard. Just paste the path and the AI can read the image.
+clipshot solves this - take a screenshot locally, and it automatically uploads to your remote server and copies the path to your clipboard. So you just take screenshot like usual and then paste the path and the AI can read the image.
 
 ## Install
 
