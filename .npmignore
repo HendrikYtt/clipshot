@@ -1,0 +1,4 @@
+src/
+.claude/
+tsconfig.json
+node_modules/
