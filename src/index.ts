@@ -125,16 +125,32 @@ function uninstall(): void {
 
 function stopBackground(): void {
   try {
-    // Use bracket trick to avoid pgrep matching itself
+    // First check if any processes are running
     const result = execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
     const pids = result.trim().split("\n").filter(Boolean);
-    for (const pid of pids) {
-      process.kill(parseInt(pid), "SIGTERM");
-      console.log(`Stopped process ${pid}`);
-    }
+
     if (pids.length === 0) {
       console.log("No clipshot process running");
+      return;
     }
+
+    // Use pkill for reliable process termination
+    try {
+      execSync("pkill -f 'node.*clipshot.*--daemon'", { encoding: "utf8" });
+    } catch {
+      // pkill returns non-zero even on success sometimes
+    }
+
+    // Verify they're stopped
+    try {
+      execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
+      // If we get here, some processes survived - try SIGKILL
+      execSync("pkill -9 -f 'node.*clipshot.*--daemon'", { encoding: "utf8" });
+    } catch {
+      // No processes found - good
+    }
+
+    console.log(`Stopped ${pids.length} process(es)`);
   } catch {
     console.log("No clipshot process running");
   }
