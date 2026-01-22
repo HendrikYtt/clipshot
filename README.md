@@ -2,6 +2,8 @@
 
 Screenshot monitor CLI. Watches clipboard for screenshots and uploads to remote server via SSH, or saves locally.
 
+![Demo](demo_video.gif) 
+
 ## Why?
 
 When using AI CLI tools like Claude Code, Codex, or others, you often need to share screenshots with them. But when you SSH into a remote server to use these tools, you can't paste images at all.
