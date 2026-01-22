@@ -1,0 +1,28 @@
+{
+  "name": "clipshot",
+  "version": "1.0.5",
+  "description": "Screenshot monitor CLI tool",
+  "main": "dist/index.js",
+  "bin": {
+    "clipshot": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "screenshot",
+    "monitor",
+    "clipboard"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@crosscopy/clipboard": "^0.2.8",
+    "enquirer": "^2.4.1"
+  }
+}
