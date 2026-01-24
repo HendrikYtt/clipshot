@@ -11,7 +11,12 @@ let lastImageHash: string | null = null;
 let logFile: string | null = null;
 let logStartTime: number = 0;
 
+const isWindows = process.platform === "win32";
+
 function isWSL(): boolean {
+  if (isWindows) {
+    return false;
+  }
   try {
     const release = fs.readFileSync("/proc/version", "utf8");
     return release.toLowerCase().includes("microsoft") || release.toLowerCase().includes("wsl");
@@ -58,7 +63,7 @@ function log(message: string): void {
   }
 }
 
-async function getClipboardImageWSL(): Promise<Buffer | null> {
+async function getClipboardImageWindows(): Promise<Buffer | null> {
   try {
     // PowerShell script to get clipboard image as base64
     const psScript = `
@@ -73,9 +78,12 @@ if ($img -ne $null) {
     // Encode as UTF-16LE base64 for -EncodedCommand
     const encoded = Buffer.from(psScript, "utf16le").toString("base64");
 
-    const result = execSync(`powershell.exe -NoProfile -EncodedCommand ${encoded}`, {
+    // Use powershell.exe for WSL, powershell for native Windows
+    const psCmd = isWindows ? "powershell" : "powershell.exe";
+    const result = execSync(`${psCmd} -NoProfile -WindowStyle Hidden -EncodedCommand ${encoded}`, {
       encoding: "utf8",
       timeout: 5000,
+      windowsHide: true,
     }).trim();
 
     if (result && result.length > 0) {
@@ -107,8 +115,8 @@ async function getClipboardImageNative(): Promise<Buffer | null> {
 }
 
 async function getClipboardImage(): Promise<Buffer | null> {
-  if (isWSL()) {
-    return getClipboardImageWSL();
+  if (isWindows || isWSL()) {
+    return getClipboardImageWindows();
   }
   return getClipboardImageNative();
 }
@@ -141,45 +149,59 @@ function saveLocal(imageBuffer: Buffer, filename: string): { success: boolean; p
   }
 }
 
-function getRemoteHomeDir(remote: string): string {
+function getRemoteHomePath(remote: string): string {
   // Extract username from user@host format
   const match = remote.match(/^([^@]+)@/);
-  const user = match ? match[1] : "root";
-  return user === "root" ? "/root" : `/home/${user}`;
+  if (match) {
+    const user = match[1];
+    return user === "root" ? "/root" : `/home/${user}`;
+  }
+  // Named host without user - fall back to ~
+  return "~";
 }
 
-async function pipeToRemote(imageBuffer: Buffer, remote: string, filename: string): Promise<{ success: boolean; path: string }> {
-  const homeDir = getRemoteHomeDir(remote);
+async function pipeToRemote(imageBuffer: Buffer, remote: string, filename: string): Promise<{ success: boolean; path: string; error?: string }> {
+  const homeDir = getRemoteHomePath(remote);
   const remotePath = `${homeDir}/clipshot-screenshots/${filename}`;
 
   return new Promise((resolve) => {
-    // Ensure directory exists and write file
-    // Use ControlMaster options for faster repeated connections
+    // Use ~ in the command so SSH resolves it correctly
     const proc = spawn("ssh", [
-      "-o", "ControlMaster=auto",
-      "-o", "ControlPath=~/.ssh/clipshot-%r@%h:%p",
-      "-o", "ControlPersist=60",
       remote,
-      `mkdir -p ${homeDir}/clipshot-screenshots && cat > ${remotePath}`
-    ]);
+      `mkdir -p ~/clipshot-screenshots && cat > ~/clipshot-screenshots/${filename}`
+    ], {
+      windowsHide: true,
+    });
+
+    let stderr = "";
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
 
     proc.stdin.write(imageBuffer);
     proc.stdin.end();
 
     proc.on("close", (code) => {
-      resolve({ success: code === 0, path: remotePath });
+      // Return the explicit path for clipboard, but command used ~ for reliability
+      resolve({ success: code === 0, path: remotePath, error: stderr.trim() || undefined });
     });
 
-    proc.on("error", () => {
-      resolve({ success: false, path: remotePath });
+    proc.on("error", (err) => {
+      resolve({ success: false, path: remotePath, error: err.message });
     });
   });
 }
 
-function copyToClipboardWSL(text: string): void {
+function copyToClipboardWindows(text: string): void {
   try {
-    // Use clip.exe which is much faster than PowerShell
-    execSync(`echo -n '${text.replace(/'/g, "'\\''")}' | clip.exe`, { timeout: 2000 });
+    if (isWindows) {
+      // On native Windows, use PowerShell's Set-Clipboard
+      const escaped = text.replace(/'/g, "''");
+      execSync(`powershell -NoProfile -WindowStyle Hidden -Command "Set-Clipboard -Value '${escaped}'"`, { timeout: 2000, windowsHide: true });
+    } else {
+      // On WSL, use clip.exe
+      execSync(`echo -n '${text.replace(/'/g, "'\\''")}' | clip.exe`, { timeout: 2000 });
+    }
   } catch {
     // Ignore clipboard errors
   }
@@ -196,8 +218,8 @@ async function copyToClipboardNative(text: string): Promise<void> {
 }
 
 async function copyToClipboard(text: string): Promise<void> {
-  if (isWSL()) {
-    copyToClipboardWSL(text);
+  if (isWindows || isWSL()) {
+    copyToClipboardWindows(text);
   } else {
     await copyToClipboardNative(text);
   }
@@ -209,8 +231,9 @@ export async function startMonitor(remote: string): Promise<void> {
   logStartTime = Date.now();
 
   const wsl = isWSL();
+  const env = isWindows ? "Windows" : (wsl ? "WSL" : "Native");
   log(`Starting monitor for: ${remote}`);
-  log(`Environment: ${wsl ? "WSL" : "Native"}`);
+  log(`Environment: ${env}`);
   log(`Log file: ${logFile}`);
   if (remote === "local") {
     log(`Saving to: ${getLocalScreenshotDir()}`);
@@ -259,6 +282,9 @@ export async function startMonitor(remote: string): Promise<void> {
             log(`  -> Copied to clipboard`);
           } else {
             log(`  -> Failed to send to ${remote}`);
+            if (result.error) {
+              log(`  -> Error: ${result.error}`);
+            }
           }
         }
       }

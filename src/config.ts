@@ -76,14 +76,15 @@ export function detectSSHRemotes(): SSHHost[] {
   return hosts;
 }
 
-export function detectSSHFromHistory(): string[] {
+export function detectSSHFromHistory(limit = 5): string[] {
   const home = os.homedir();
   const historyFiles = [
     path.join(home, ".bash_history"),
     path.join(home, ".zsh_history"),
   ];
 
-  const remotes = new Set<string>();
+  // Track remotes in order of most recent appearance
+  const remotes: string[] = [];
 
   for (const histFile of historyFiles) {
     if (!fs.existsSync(histFile)) continue;
@@ -102,7 +103,12 @@ export function detectSSHFromHistory(): string[] {
             // Clean up any trailing characters
             const clean = remote.replace(/[;|&].*$/, "");
             if (clean.match(/^[\w.-]+@[\w.-]+$/)) {
-              remotes.add(clean);
+              // Remove if exists, then add to end (most recent)
+              const idx = remotes.indexOf(clean);
+              if (idx !== -1) {
+                remotes.splice(idx, 1);
+              }
+              remotes.push(clean);
             }
           }
         }
@@ -112,5 +118,6 @@ export function detectSSHFromHistory(): string[] {
     }
   }
 
-  return Array.from(remotes);
+  // Return most recent entries (last N items, reversed so most recent is first)
+  return remotes.slice(-limit).reverse();
 }

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "dev": "tsc && node dist/index.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

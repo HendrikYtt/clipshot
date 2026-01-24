@@ -8,6 +8,82 @@ import { Config, loadConfig, saveConfig, detectSSHRemotes, detectSSHFromHistory 
 import { promptConfirm, promptSelect, promptInput, promptMultiSelect } from "./prompts";
 import { startMonitor } from "./monitor";
 
+const isWindows = process.platform === "win32";
+
+interface ProcessInfo {
+  pid: number;
+  command: string;
+}
+
+function findClipshotProcesses(): ProcessInfo[] {
+  const processes: ProcessInfo[] = [];
+
+  try {
+    if (isWindows) {
+      // Use PowerShell to get node processes with command line (WMIC is deprecated)
+      const psScript = `$ProgressPreference = 'SilentlyContinue'; Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Where-Object { $_.CommandLine -like '*clipshot*' -and $_.CommandLine -like '*--daemon*' } | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation`;
+      const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+      const result = execSync(
+        `powershell -NoProfile -WindowStyle Hidden -EncodedCommand ${encoded}`,
+        { encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }
+      );
+
+      for (const line of result.split("\n").slice(1)) { // Skip header
+        if (!line.trim()) continue;
+        // CSV format: "ProcessId","CommandLine"
+        const match = line.match(/"(\d+)","(.*)"/);
+        if (match) {
+          const pid = parseInt(match[1]);
+          if (!isNaN(pid) && pid !== process.pid) {
+            processes.push({ pid, command: match[2] });
+          }
+        }
+      }
+    } else {
+      // Unix: use pgrep
+      const result = execSync("pgrep -af 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
+      for (const line of result.trim().split("\n").filter(Boolean)) {
+        const pid = parseInt(line.split(/\s+/)[0]);
+        if (!isNaN(pid)) {
+          processes.push({ pid, command: line });
+        }
+      }
+    }
+  } catch {
+    // No processes found
+  }
+
+  return processes;
+}
+
+function killProcess(pid: number, force = false): void {
+  try {
+    if (isWindows) {
+      execSync(`taskkill /PID ${pid}${force ? " /F" : ""}`, { stdio: "pipe", windowsHide: true });
+    } else {
+      process.kill(pid, force ? "SIGKILL" : "SIGTERM");
+    }
+  } catch {
+    // Process may have already exited
+  }
+}
+
+function killAllClipshotProcesses(): number {
+  const processes = findClipshotProcesses();
+
+  for (const proc of processes) {
+    killProcess(proc.pid);
+  }
+
+  // Check if any survived and force kill
+  const remaining = findClipshotProcesses();
+  for (const proc of remaining) {
+    killProcess(proc.pid, true);
+  }
+
+  return processes.length;
+}
+
 function getVersion(): string {
   const pkgPath = path.join(__dirname, "..", "package.json");
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
@@ -23,11 +99,12 @@ async function addRemotes(existing: string[]): Promise<string[]> {
   // From SSH config
   const sshHosts = detectSSHRemotes();
   for (const host of sshHosts) {
-    if (!remotes.includes(host.name)) {
-      const details = [host.user, host.hostname].filter(Boolean).join("@");
+    // Use user@host format if user is specified, otherwise just host name
+    const remoteName = host.user ? `${host.user}@${host.name}` : host.name;
+    if (!remotes.includes(remoteName)) {
       allDetected.push({
-        name: host.name,
-        source: details ? `config: ${details}` : "config",
+        name: remoteName,
+        source: "config",
       });
     }
   }
@@ -100,17 +177,9 @@ Run without command to setup/configure.
 
 function uninstall(): void {
   // Stop any running process
-  try {
-    const result = execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
-    const pids = result.trim().split("\n").filter(Boolean);
-    for (const pid of pids) {
-      process.kill(parseInt(pid), "SIGTERM");
-    }
-    if (pids.length > 0) {
-      console.log("Stopped running process");
-    }
-  } catch {
-    // Not running
+  const count = killAllClipshotProcesses();
+  if (count > 0) {
+    console.log("Stopped running process");
   }
 
   // Remove config directory
@@ -124,61 +193,30 @@ function uninstall(): void {
 }
 
 function stopBackground(): void {
-  try {
-    // First check if any processes are running
-    const result = execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
-    const pids = result.trim().split("\n").filter(Boolean);
-
-    if (pids.length === 0) {
-      console.log("No clipshot process running");
-      return;
-    }
-
-    // Use pkill for reliable process termination
-    try {
-      execSync("pkill -f 'node.*clipshot.*--daemon'", { encoding: "utf8" });
-    } catch {
-      // pkill returns non-zero even on success sometimes
-    }
-
-    // Verify they're stopped
-    try {
-      execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
-      // If we get here, some processes survived - try SIGKILL
-      execSync("pkill -9 -f 'node.*clipshot.*--daemon'", { encoding: "utf8" });
-    } catch {
-      // No processes found - good
-    }
-
-    console.log(`Stopped ${pids.length} process(es)`);
-  } catch {
+  const count = killAllClipshotProcesses();
+  if (count > 0) {
+    console.log(`Stopped ${count} process(es)`);
+  } else {
     console.log("No clipshot process running");
   }
 }
 
 function showStatus(): void {
-  try {
-    // Use bracket trick to avoid pgrep matching itself
-    const result = execSync("pgrep -af 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
-    const lines = result.trim().split("\n").filter(Boolean);
-    if (lines.length > 0) {
-      for (const line of lines) {
-        // Parse "PID command args"
-        const match = line.match(/^(\d+)\s+.*--daemon\s+(.+)$/);
-        if (match) {
-          const pid = match[1];
-          const target = match[2];
-          console.log(`Running (PID: ${pid}) -> ${target}`);
-        } else {
-          const pid = line.split(/\s+/)[0];
-          console.log(`Running (PID: ${pid})`);
-        }
-      }
-    } else {
-      console.log("Not running");
-    }
-  } catch {
+  const processes = findClipshotProcesses();
+
+  if (processes.length === 0) {
     console.log("Not running");
+    return;
+  }
+
+  for (const proc of processes) {
+    // Try to extract target from command line
+    const match = proc.command.match(/--daemon\s+(\S+)/);
+    if (match) {
+      console.log(`Running (PID: ${proc.pid}) -> ${match[1]}`);
+    } else {
+      console.log(`Running (PID: ${proc.pid})`);
+    }
   }
 }
 
@@ -238,17 +276,9 @@ async function startCommand(): Promise<void> {
   }
 
   // Stop any existing process before starting new one
-  try {
-    const result = execSync("pgrep -f 'node.*[c]lipshot.*--daemon'", { encoding: "utf8" });
-    const pids = result.trim().split("\n").filter(Boolean);
-    for (const pid of pids) {
-      process.kill(parseInt(pid), "SIGTERM");
-    }
-    if (pids.length > 0) {
-      console.log(`Stopped previous process`);
-    }
-  } catch {
-    // Not running, continue
+  const count = killAllClipshotProcesses();
+  if (count > 0) {
+    console.log(`Stopped previous process`);
   }
 
   startBackground(selected);
