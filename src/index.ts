@@ -151,11 +151,24 @@ async function addRemotes(existing: string[]): Promise<string[]> {
 }
 
 function startBackground(remote: string): void {
-  const child = spawn(process.execPath, [__filename, "--daemon", remote], {
-    detached: true,
-    stdio: "ignore",
-    env: { ...process.env, SHOTMON_BACKGROUND: "1" },
-  });
+  let child;
+
+  if (isWindows) {
+    // Windows: use detached mode
+    child = spawn(process.execPath, [__filename, "--daemon", remote], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, SHOTMON_BACKGROUND: "1" },
+      windowsHide: true,
+    });
+  } else {
+    // Linux/macOS: use setsid to create new session while preserving DISPLAY access
+    child = spawn("setsid", ["-f", process.execPath, __filename, "--daemon", remote], {
+      stdio: "ignore",
+      env: { ...process.env, SHOTMON_BACKGROUND: "1" },
+    });
+  }
+
   child.unref();
   console.log(`Started in background (PID: ${child.pid})`);
   console.log(`Logs: ~/.config/clipshot/logs/`);
