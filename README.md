@@ -2,7 +2,7 @@
 
 Screenshot monitor CLI. Watches clipboard for screenshots and uploads to remote server via SSH, or saves locally.
 
-![Demo](demo_video.gif) 
+![Demo](demonstration.gif) 
 
 ## Why?
 
