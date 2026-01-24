@@ -99,7 +99,7 @@ async function getClipboardImageNative(): Promise<Buffer | null> {
   try {
     // Try using @crosscopy/clipboard for native Linux/macOS
     // @ts-ignore
-    const Clipboard = require("@crosscopy/clipboard").default;
+    const Clipboard = require("@crosscopy/clipboard");
     const hasImage = await Clipboard.hasImage();
     if (!hasImage) {
       return null;
@@ -210,7 +210,7 @@ function copyToClipboardWindows(text: string): void {
 async function copyToClipboardNative(text: string): Promise<void> {
   try {
     // @ts-ignore
-    const Clipboard = require("@crosscopy/clipboard").default;
+    const Clipboard = require("@crosscopy/clipboard");
     await Clipboard.setText(text);
   } catch {
     // Ignore clipboard errors
