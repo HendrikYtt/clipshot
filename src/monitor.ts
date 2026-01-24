@@ -97,18 +97,24 @@ if ($img -ne $null) {
 
 async function getClipboardImageNative(): Promise<Buffer | null> {
   try {
-    // Try using @crosscopy/clipboard for native Linux/macOS
-    // @ts-ignore
-    const Clipboard = require("@crosscopy/clipboard");
-    const hasImage = await Clipboard.hasImage();
-    if (!hasImage) {
+    // Check if clipboard has image using xclip
+    const targets = execSync("xclip -selection clipboard -t TARGETS -o 2>/dev/null", {
+      encoding: "utf8",
+      timeout: 2000,
+    });
+
+    if (!targets.includes("image/png")) {
       return null;
     }
-    const base64 = await Clipboard.getImageBase64();
-    if (!base64) {
-      return null;
-    }
-    return Buffer.from(base64, "base64");
+
+    // Get image data
+    const imageData = execSync("xclip -selection clipboard -t image/png -o 2>/dev/null", {
+      encoding: "buffer",
+      timeout: 5000,
+      maxBuffer: 50 * 1024 * 1024, // 50MB max
+    });
+
+    return imageData.length > 0 ? imageData : null;
   } catch {
     return null;
   }
@@ -209,9 +215,9 @@ function copyToClipboardWindows(text: string): void {
 
 async function copyToClipboardNative(text: string): Promise<void> {
   try {
-    // @ts-ignore
-    const Clipboard = require("@crosscopy/clipboard");
-    await Clipboard.setText(text);
+    // Use xclip to set clipboard text
+    const escaped = text.replace(/'/g, "'\\''");
+    execSync(`echo -n '${escaped}' | xclip -selection clipboard`, { timeout: 2000 });
   } catch {
     // Ignore clipboard errors
   }
