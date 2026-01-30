@@ -64,15 +64,19 @@ function log(message: string): void {
 }
 
 async function getClipboardImageWindows(): Promise<Buffer | null> {
+  const tempFileName = `clipshot-clipboard-${Date.now()}.png`;
+  let tempFilePath: string | null = null;
+
   try {
-    // PowerShell script to get clipboard image as base64
+    // PowerShell script to get clipboard image and save directly to temp file
+    // This avoids base64 encoding and stdout buffer limits for large images
     const psScript = `
 Add-Type -AssemblyName System.Windows.Forms
 $img = [System.Windows.Forms.Clipboard]::GetImage()
 if ($img -ne $null) {
-  $ms = New-Object System.IO.MemoryStream
-  $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-  [Convert]::ToBase64String($ms.ToArray())
+  $tempPath = Join-Path $env:TEMP '${tempFileName}'
+  $img.Save($tempPath, [System.Drawing.Imaging.ImageFormat]::Png)
+  Write-Output $tempPath
 }
 `;
     // Encode as UTF-16LE base64 for -EncodedCommand
@@ -80,17 +84,39 @@ if ($img -ne $null) {
 
     // Use powershell.exe for WSL, powershell for native Windows
     const psCmd = isWindows ? "powershell" : "powershell.exe";
-    const result = execSync(`${psCmd} -NoProfile -WindowStyle Hidden -EncodedCommand ${encoded}`, {
+    const windowsPath = execSync(`${psCmd} -NoProfile -WindowStyle Hidden -EncodedCommand ${encoded}`, {
       encoding: "utf8",
       timeout: 5000,
       windowsHide: true,
     }).trim();
 
-    if (result && result.length > 0) {
-      return Buffer.from(result, "base64");
+    if (!windowsPath || windowsPath.length === 0) {
+      return null;
     }
+
+    // Convert path for WSL if needed
+    if (isWindows) {
+      tempFilePath = windowsPath;
+    } else {
+      tempFilePath = execSync(`wslpath '${windowsPath}'`, { encoding: "utf8", timeout: 2000 }).trim();
+    }
+
+    if (fs.existsSync(tempFilePath)) {
+      const imageBuffer = fs.readFileSync(tempFilePath);
+      fs.unlinkSync(tempFilePath);
+      return imageBuffer;
+    }
+
     return null;
   } catch {
+    // Try to clean up temp file if it was created
+    if (tempFilePath) {
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
     return null;
   }
 }
