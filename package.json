@@ -1,6 +1,6 @@
 {
   "name": "clipshot",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "Screenshot monitor CLI tool",
   "main": "dist/index.js",
   "bin": {
