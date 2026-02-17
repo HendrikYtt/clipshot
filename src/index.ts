@@ -167,6 +167,7 @@ function startBackground(remote: string): void {
     // Linux/macOS: use nohup + shell backgrounding to preserve X11/Wayland access
     // The native clipboard library crashes with Node's detached mode
     const logDir = path.join(os.homedir(), ".config", "clipshot", "logs");
+    fs.mkdirSync(logDir, { recursive: true });
     const cmd = `nohup "${process.execPath}" "${__filename}" --daemon "${remote}" >> "${logDir}/daemon.log" 2>&1 & echo $!`;
     const result = execSync(cmd, {
       encoding: "utf8",
