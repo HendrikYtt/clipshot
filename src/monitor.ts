@@ -10,8 +10,10 @@ const LOG_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 let lastImageHash: string | null = null;
 let logFile: string | null = null;
 let logStartTime: number = 0;
+let lastSeenScreenshotMtime: number = 0;
 
 const isWindows = process.platform === "win32";
+const isMac = process.platform === "darwin";
 
 function isWSL(): boolean {
   if (isWindows) {
@@ -146,9 +148,69 @@ async function getClipboardImageNative(): Promise<Buffer | null> {
   }
 }
 
+function getMacScreenshotDir(): string {
+  try {
+    const loc = execSync("defaults read com.apple.screencapture location 2>/dev/null", {
+      encoding: "utf8",
+      timeout: 2000,
+    }).trim();
+    if (loc) return loc;
+  } catch {
+    // defaults command failed — key not set
+  }
+  return path.join(os.homedir(), "Desktop");
+}
+
+async function getClipboardImageMac(): Promise<Buffer | null> {
+  try {
+    const imageData = execSync("pngpaste - 2>/dev/null", {
+      encoding: "buffer",
+      timeout: 5000,
+      maxBuffer: 50 * 1024 * 1024, // 50MB max
+    });
+    return imageData.length > 0 ? imageData : null;
+  } catch {
+    // pngpaste exits non-zero if no image on clipboard
+    return null;
+  }
+}
+
+function getLatestMacScreenshot(): Buffer | null {
+  const dir = getMacScreenshotDir();
+  try {
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.startsWith("Screenshot") && f.endsWith(".png"))
+      .map((f) => {
+        const fullPath = path.join(dir, f);
+        const stat = fs.statSync(fullPath);
+        return { path: fullPath, mtime: stat.mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+
+    if (files.length === 0) return null;
+
+    const newest = files[0];
+    if (newest.mtime <= lastSeenScreenshotMtime) return null;
+
+    // Wait briefly to ensure file is fully written
+    const now = Date.now();
+    if (now - newest.mtime < 300) {
+      return null; // Too fresh — check again next poll
+    }
+
+    lastSeenScreenshotMtime = newest.mtime;
+    return fs.readFileSync(newest.path);
+  } catch {
+    return null;
+  }
+}
+
 async function getClipboardImage(): Promise<Buffer | null> {
   if (isWindows || isWSL()) {
     return getClipboardImageWindows();
+  }
+  if (isMac) {
+    return getClipboardImageMac();
   }
   return getClipboardImageNative();
 }
@@ -188,7 +250,20 @@ function getRemoteHomePath(remote: string): string {
     const user = match[1];
     return user === "root" ? "/root" : `/home/${user}`;
   }
-  // Named host without user - fall back to ~
+  // Named host without user — resolve via ssh -G
+  try {
+    const output = execSync(`ssh -G ${remote} 2>/dev/null`, {
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    const userMatch = output.match(/^user\s+(.+)$/m);
+    if (userMatch) {
+      const user = userMatch[1];
+      return user === "root" ? "/root" : `/home/${user}`;
+    }
+  } catch {
+    // ssh -G failed
+  }
   return "~";
 }
 
@@ -249,11 +324,56 @@ async function copyToClipboardNative(text: string): Promise<void> {
   }
 }
 
+async function copyToClipboardMac(text: string): Promise<void> {
+  try {
+    const escaped = text.replace(/'/g, "'\\''");
+    execSync(`echo -n '${escaped}' | pbcopy`, { timeout: 2000 });
+  } catch {
+    // Ignore clipboard errors
+  }
+}
+
 async function copyToClipboard(text: string): Promise<void> {
   if (isWindows || isWSL()) {
     copyToClipboardWindows(text);
+  } else if (isMac) {
+    await copyToClipboardMac(text);
   } else {
     await copyToClipboardNative(text);
+  }
+}
+
+async function processNewImage(
+  imageBuffer: Buffer,
+  remote: string,
+  source: "clipboard" | "file"
+): Promise<void> {
+  const filename = generateFilename();
+  const size = Math.round(imageBuffer.length / 1024);
+
+  log(`New screenshot (${source}): ${filename} (${size}KB)`);
+
+  if (remote === "local") {
+    const result = saveLocal(imageBuffer, filename);
+    if (result.success) {
+      log(`  -> Saved: ${result.path}`);
+      await copyToClipboard(result.path);
+      log(`  -> Copied to clipboard`);
+    } else {
+      log(`  -> Failed to save locally`);
+    }
+  } else {
+    const result = await pipeToRemote(imageBuffer, remote, filename);
+    if (result.success) {
+      log(`  -> Sent to ${remote}:${result.path}`);
+      await copyToClipboard(result.path);
+      log(`  -> Copied to clipboard`);
+    } else {
+      log(`  -> Failed to send to ${remote}`);
+      if (result.error) {
+        log(`  -> Error: ${result.error}`);
+      }
+    }
   }
 }
 
@@ -263,16 +383,46 @@ export async function startMonitor(remote: string): Promise<void> {
   logStartTime = Date.now();
 
   const wsl = isWSL();
-  const env = isWindows ? "Windows" : (wsl ? "WSL" : "Native");
+  const env = isWindows ? "Windows" : (wsl ? "WSL" : (isMac ? "macOS" : "Linux"));
   log(`Starting monitor for: ${remote}`);
   log(`Environment: ${env}`);
   log(`Log file: ${logFile}`);
   if (remote === "local") {
     log(`Saving to: ${getLocalScreenshotDir()}`);
   }
+
+  // macOS-specific initialization
+  if (isMac) {
+    // Check pngpaste availability
+    try {
+      execSync("which pngpaste", { encoding: "utf8", timeout: 2000 });
+    } catch {
+      log("Warning: pngpaste not found. Install with: brew install pngpaste");
+      log("  Clipboard detection disabled — file watcher still active.");
+    }
+
+    // Initialize lastSeenScreenshotMtime to newest existing Screenshot file
+    const screenshotDir = getMacScreenshotDir();
+    try {
+      const files = fs.readdirSync(screenshotDir)
+        .filter((f) => f.startsWith("Screenshot") && f.endsWith(".png"))
+        .map((f) => {
+          const stat = fs.statSync(path.join(screenshotDir, f));
+          return stat.mtimeMs;
+        });
+      if (files.length > 0) {
+        lastSeenScreenshotMtime = Math.max(...files);
+      }
+    } catch {
+      // Directory might not exist
+    }
+    log(`Watching screenshot dir: ${screenshotDir}`);
+  }
+
   log("");
   log("Monitoring clipboard... (Ctrl+C to stop)");
   log("");
+
   // Initialize with current clipboard state
   const initialImage = await getClipboardImage();
   if (initialImage) {
@@ -281,42 +431,25 @@ export async function startMonitor(remote: string): Promise<void> {
 
   const poll = async () => {
     try {
+      // Check clipboard
       const imageBuffer = await getClipboardImage();
 
-      if (!imageBuffer) {
-        return;
+      if (imageBuffer) {
+        const currentHash = getImageHash(imageBuffer);
+        if (currentHash !== lastImageHash) {
+          lastImageHash = currentHash;
+          await processNewImage(imageBuffer, remote, "clipboard");
+        }
       }
 
-      const currentHash = getImageHash(imageBuffer);
-
-      if (currentHash !== lastImageHash) {
-        lastImageHash = currentHash;
-
-        const filename = generateFilename();
-        const size = Math.round(imageBuffer.length / 1024);
-
-        log(`New screenshot: ${filename} (${size}KB)`);
-
-        if (remote === "local") {
-          const result = saveLocal(imageBuffer, filename);
-          if (result.success) {
-            log(`  -> Saved: ${result.path}`);
-            await copyToClipboard(result.path);
-            log(`  -> Copied to clipboard`);
-          } else {
-            log(`  -> Failed to save locally`);
-          }
-        } else {
-          const result = await pipeToRemote(imageBuffer, remote, filename);
-          if (result.success) {
-            log(`  -> Sent to ${remote}:${result.path}`);
-            await copyToClipboard(result.path);
-            log(`  -> Copied to clipboard`);
-          } else {
-            log(`  -> Failed to send to ${remote}`);
-            if (result.error) {
-              log(`  -> Error: ${result.error}`);
-            }
+      // On macOS, also check for new screenshot files (Cmd+Shift screenshots)
+      if (isMac) {
+        const fileBuffer = getLatestMacScreenshot();
+        if (fileBuffer) {
+          const fileHash = getImageHash(fileBuffer);
+          if (fileHash !== lastImageHash) {
+            lastImageHash = fileHash;
+            await processNewImage(fileBuffer, remote, "file");
           }
         }
       }
